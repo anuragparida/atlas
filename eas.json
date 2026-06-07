@@ -1,0 +1,25 @@
+{
+  "$schema": "https://docs.expo.dev/eas.json",
+  "cli": {
+    "version": ">= 12.0.0",
+    "appVersionSource": "remote"
+  },
+  "build": {
+    "development": {
+      "distribution": "internal",
+      "ios": {
+        "simulator": false,
+        "developmentClient": true
+      },
+      "android": {
+        "gradleCommand": ":app:assembleDebug"
+      }
+    },
+    "preview": {
+      "distribution": "internal",
+      "ios": {
+        "simulator": false
+      }
+    }
+  }
+}
