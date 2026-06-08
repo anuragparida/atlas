@@ -1545,3 +1545,230 @@ def test_extract_last_message_hermes_user_only_returns_none():
         },
     }
     assert openwebui_client._extract_last_message(chat) == (None, None, None)
+
+
+# ---------------------------------------------------------------------------
+# poll_once list-endpoint shape (Hermes WebUI 0.9.6)
+# ---------------------------------------------------------------------------
+#
+# The list endpoint /api/v1/chats/?page=1 returns a bare list (not
+# {"chats": [...]} wrapping). Each item is also a slim shape with no
+# chat history — the notifier must fetch /api/v1/chats/{id} to get the
+# full history. Without these changes, poll_once returns {} and the
+# notifier never processes a chat.
+
+
+async def test_poll_once_accepts_bare_list_response():
+    """poll_once handles the list endpoint returning a bare list."""
+    chats = [
+        {"id": "c1", "title": "t", "updated_at": 1_700_000_000,
+         "created_at": 1_700_000_000, "last_read_at": None},
+        {"id": "c2", "title": "t", "updated_at": 1_700_000_000,
+         "created_at": 1_700_000_000, "last_read_at": None},
+    ]
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/chats/" and request.method == "GET":
+            return httpx.Response(200, json=chats)  # bare list, not {chats: [...]}
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        base_url="http://x", transport=transport, timeout=1.0
+    ) as http:
+        client = openwebui_client.OpenWebUIClient(
+            base_url="http://x", api_key="tk", http_client=http
+        )
+        result = await client.poll_once()
+    # Without per-chat fetches, the slim items yield 'unknown' for both.
+    assert set(result.keys()) == {"c1", "c2"}
+    assert result["c1"] == "unknown"
+    assert result["c2"] == "unknown"
+
+
+async def test_poll_once_fetches_slim_chats_to_get_history():
+    """When a list item has no history inline, poll_once fetches
+    /api/v1/chats/{id} to get the full Hermes shape. The fetch result
+    is what infer_status runs against.
+    """
+    full_chat = {
+        "id": "c1",
+        "title": "t",
+        "updated_at": time.time(),
+        "created_at": time.time(),
+        "chat": {
+            "history": {
+                "currentId": "a1",
+                "messages": {
+                    "a1": {
+                        "id": "a1",
+                        "parentId": "u1",
+                        "childrenIds": [],
+                        "role": "assistant",
+                        "content": "OK",
+                        "timestamp": time.time() - 1,
+                        "done": True,
+                    },
+                },
+            }
+        },
+    }
+    # Slim list item
+    slim_item = {"id": "c1", "title": "t", "updated_at": time.time(),
+                 "created_at": time.time(), "last_read_at": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/chats/" and request.method == "GET":
+            return httpx.Response(200, json=[slim_item])
+        if request.url.path == "/api/v1/chats/c1" and request.method == "GET":
+            return httpx.Response(200, json=full_chat)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        base_url="http://x", transport=transport, timeout=1.0
+    ) as http:
+        client = openwebui_client.OpenWebUIClient(
+            base_url="http://x", api_key="tk", http_client=http
+        )
+        result = await client.poll_once()
+    assert result == {"c1": "idle"}
+
+
+async def test_poll_once_falls_through_when_slim_chat_fetch_fails():
+    """If the per-chat fetch 4xx/5xx, we still record the chat as 'unknown'
+    rather than dropping it on the floor."""
+    slim_item = {"id": "c1", "title": "t", "updated_at": time.time(),
+                 "created_at": time.time(), "last_read_at": None}
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/chats/" and request.method == "GET":
+            return httpx.Response(200, json=[slim_item])
+        if request.url.path == "/api/v1/chats/c1" and request.method == "GET":
+            return httpx.Response(500, json={"detail": "boom"})
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        base_url="http://x", transport=transport, timeout=1.0
+    ) as http:
+        client = openwebui_client.OpenWebUIClient(
+            base_url="http://x", api_key="tk", http_client=http
+        )
+        result = await client.poll_once()
+    assert result == {"c1": "unknown"}
+
+
+async def test_poll_once_skips_per_chat_fetch_for_already_full_chats():
+    """If a list item already contains a chat history (the legacy or
+    Hermes inline shape), poll_once must not issue an extra GET."""
+    now = time.time()
+    full_inline = {
+        "id": "c1",
+        "title": "t",
+        "updated_at": now,
+        "created_at": now,
+        "chat": {
+            "history": {
+                "currentId": "a1",
+                "messages": {
+                    "a1": {
+                        "id": "a1",
+                        "parentId": "u1",
+                        "childrenIds": [],
+                        "role": "assistant",
+                        "content": "OK",
+                        "timestamp": now - 1,
+                        "done": True,
+                    }
+                },
+            }
+        },
+    }
+    requests_seen: list[str] = []
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        requests_seen.append(request.url.path)
+        if request.url.path == "/api/v1/chats/" and request.method == "GET":
+            return httpx.Response(200, json=[full_inline])
+        if request.url.path == "/api/v1/chats/c1" and request.method == "GET":
+            return httpx.Response(200, json=full_inline)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        base_url="http://x", transport=transport, timeout=1.0
+    ) as http:
+        client = openwebui_client.OpenWebUIClient(
+            base_url="http://x", api_key="tk", http_client=http
+        )
+        result = await client.poll_once()
+    # Only the list endpoint should have been hit.
+    assert requests_seen == ["/api/v1/chats/"]
+    assert result == {"c1": "idle"}
+
+
+# ---------------------------------------------------------------------------
+# Real Hermes WebUI 0.9.6 end-to-end smoke
+# ---------------------------------------------------------------------------
+
+
+async def test_poll_once_real_hermes_shape_end_to_end():
+    """Full chain: bare-list response -> slim item -> per-chat fetch ->
+    Hermes history shape -> _extract_last_message -> infer_status.
+
+    Mirrors what the running notifier sees against the Hermes WebUI.
+    """
+    full_chat = {
+        "id": "a35f3f25-1613-4a90-99b1-3d89dddd1e86",
+        "user_id": "0d34215f-f709-4c83-8ae1-aa09cd6b196d",
+        "title": "atlas-test",
+        "chat": {
+            "history": {
+                "currentId": "a1",
+                "messages": {
+                    "a1": {
+                        "id": "a1",
+                        "parentId": "u1",
+                        "childrenIds": [],
+                        "role": "assistant",
+                        "content": "4",
+                        "timestamp": time.time() - 2,
+                        "done": True,
+                    }
+                },
+            }
+        },
+        "updated_at": time.time(),
+        "created_at": time.time(),
+    }
+    slim_item = {
+        "id": "a35f3f25-1613-4a90-99b1-3d89dddd1e86",
+        "title": "atlas-test",
+        "updated_at": time.time(),
+        "created_at": time.time(),
+        "last_read_at": None,
+    }
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        if request.url.path == "/api/v1/chats/" and request.method == "GET":
+            return httpx.Response(200, json=[slim_item])
+        if (
+            request.url.path
+            == "/api/v1/chats/a35f3f25-1613-4a90-99b1-3d89dddd1e86"
+            and request.method == "GET"
+        ):
+            return httpx.Response(200, json=full_chat)
+        return httpx.Response(404)
+
+    transport = httpx.MockTransport(handler)
+    async with httpx.AsyncClient(
+        base_url="http://x", transport=transport, timeout=1.0
+    ) as http:
+        client = openwebui_client.OpenWebUIClient(
+            base_url="http://x", api_key="tk", http_client=http
+        )
+        result = await client.poll_once()
+    assert result == {
+        "a35f3f25-1613-4a90-99b1-3d89dddd1e86": "idle"
+    }

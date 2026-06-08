@@ -375,12 +375,89 @@ class OpenWebUIClient:
 
     # ---------- poll path ----------
 
+    def _chat_has_history(self, raw: dict[str, Any]) -> bool:
+        """True if a chat dict already carries an inline history we can
+        status-infer against (legacy list, legacy nested, or modern
+        Hermes shape). False for the slim list-item shape (id/title/
+        timestamps only) — those need a per-chat fetch.
+        """
+        if not isinstance(raw, dict):
+            return False
+        # Modern Hermes: chat.history.messages.<id>.* or top-level history/messages
+        chat_inner = raw.get("chat")
+        if isinstance(chat_inner, dict) and isinstance(
+            chat_inner.get("history"), dict
+        ) and isinstance(chat_inner["history"].get("messages"), dict):
+            return True
+        if isinstance(raw.get("history"), dict) and isinstance(
+            raw["history"].get("messages"), dict
+        ):
+            return True
+        # Legacy: chat.chat_history as a list, or chat_history nested with
+        # messages.History.
+        for holder in (chat_inner if isinstance(chat_inner, dict) else raw, raw):
+            ch = holder.get("chat_history")
+            if isinstance(ch, list) and ch:
+                return True
+            if isinstance(ch, dict):
+                inner = ch.get("messages")
+                if isinstance(inner, dict) and (
+                    inner.get("History") or inner.get("history")
+                ):
+                    return True
+                if isinstance(inner, list) and inner:
+                    return True
+        return False
+
+    async def _fetch_full_chat(self, chat_id: str) -> dict[str, Any] | None:
+        """Fetch /api/v1/chats/{id} to get the full history for a slim
+        list item. Returns None on any non-2xx, malformed body, or
+        transport error so the caller can record the chat as 'unknown'
+        and keep going.
+        """
+        if self._http is None or not chat_id:
+            return None
+        try:
+            resp = await self._http.get(
+                f"{self._base_url}/api/v1/chats/{chat_id}",
+                headers=self._auth_headers(),
+                timeout=2.0,
+            )
+        except (httpx.TimeoutException, httpx.HTTPError) as e:
+            log.warning(
+                "per_chat_fetch_failed chat_id=%s reason=%s",
+                chat_id,
+                type(e).__name__,
+            )
+            return None
+        if not (200 <= resp.status_code < 300):
+            log.warning(
+                "per_chat_fetch_http_error chat_id=%s status=%d",
+                chat_id,
+                resp.status_code,
+            )
+            return None
+        try:
+            data = resp.json()
+        except (json.JSONDecodeError, ValueError):
+            log.warning("per_chat_fetch_json_malformed chat_id=%s", chat_id)
+            return None
+        return data if isinstance(data, dict) else None
+
     async def poll_once(self) -> dict[str, str]:
         """One poll pass. Returns ``{chat_id: status}`` — never raises.
 
         Malformed JSON is logged at error and the loop continues (per the
         negative-test spec: "service logs the error, continues polling,
-        no crash")."""
+        no crash").
+
+        Two shape variants of the list endpoint are accepted: a bare
+        list (Open WebUI 0.9.6, e.g. Hermes) and a wrapped object
+        ``{"chats": [...]}`` (older builds). List items may be slim
+        (id/title/timestamps only); for those, poll_once issues a
+        follow-up ``/api/v1/chats/{id}`` GET to fetch the full history
+        before inferring status.
+        """
         if self._http is None:
             return {}
         headers = self._auth_headers()
@@ -418,7 +495,13 @@ class OpenWebUIClient:
             log.error("poll_json_malformed body_prefix=%r", resp.text[:80])
             return {}
 
-        chats = data.get("chats") if isinstance(data, dict) else None
+        # Accept both bare list and {"chats": [...]} wrappers.
+        if isinstance(data, list):
+            chats = data
+        elif isinstance(data, dict):
+            chats = data.get("chats")
+        else:
+            chats = None
         if not isinstance(chats, list):
             return {}
 
@@ -434,6 +517,11 @@ class OpenWebUIClient:
             chat_id = str(raw.get("id") or raw.get("chat_id") or "")
             if not chat_id:
                 continue
+            # Slim list items need a per-chat fetch for infer_status to work.
+            if not self._chat_has_history(raw):
+                full = await self._fetch_full_chat(chat_id)
+                if full is not None:
+                    raw = full
             status = infer_status(raw, now)
             statuses[chat_id] = status
             # Track prior status so the supervisor can detect generating→idle.
