@@ -74,6 +74,11 @@ class Supervisor:
         self.cache = cache
         self._inflight: set[asyncio.Task[Any]] = set()
         self._stopped = asyncio.Event()
+        # Per-chat status from the previous poll. Used to detect
+        # generating→idle transitions; reading self.owu._states after
+        # poll_once returns the NEW state, not the previous one, so we
+        # track our own copy here.
+        self._last_statuses: dict[str, str] = {}
 
     def request_stop(self) -> None:
         self._stopped.set()
@@ -123,17 +128,21 @@ class Supervisor:
                 now = asyncio.get_running_loop().time()
                 # Walk the prior state and detect generating→idle transitions.
                 for chat_id, status in statuses.items():
-                    prev = self.owu._states.get(chat_id)  # noqa: SLF001 — internal handoff
-                    if prev is not None and prev.status == "generating" and status == "idle":
+                    prev = self._last_statuses.get(chat_id)
+                    if prev == "generating" and status == "idle":
                         # Build a synthetic completion event from the latest known state.
+                        last = self.owu._states.get(chat_id)  # noqa: SLF001
                         completion = owu_mod.CompletionEvent(
                             chat_id=chat_id,
-                            title=prev.title or "Chat finished",
-                            body=prev.body or "(no message body)",
-                            updated_at_epoch=int(prev.updated_at or now),
+                            title=(last.title if last else "") or "Chat finished",
+                            body=(last.body if last else "") or "(no message body)",
+                            updated_at_epoch=int(
+                                (last.updated_at if last else 0) or now
+                            ),
                             click_url=f"{self.cfg.openwebui_base_url}/c/{chat_id}",
                         )
                         await self._maybe_publish(completion)
+                    self._last_statuses[chat_id] = status
                 # Sleep per config (or backoff). The poll path is in the
                 # OpenWebUIClient's poll_iter for production, but the test
                 # contract is poll_once. We sleep the configured interval.

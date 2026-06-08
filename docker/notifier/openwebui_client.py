@@ -526,10 +526,23 @@ class OpenWebUIClient:
             statuses[chat_id] = status
             # Track prior status so the supervisor can detect generating→idle.
             prev_status = self._states.get(chat_id)
+            # Pull the title and the last assistant message body for the
+            # CompletionEvent the supervisor will synthesize on transition.
+            # Title comes from the chat's own ``title`` field (slim list
+            # items carry it; for fetched full chats it's nested under chat.title).
+            chat_title = raw.get("title") or ""
+            if isinstance(raw.get("chat"), dict) and raw["chat"].get("title"):
+                chat_title = raw["chat"]["title"]
+            # Body is the content of the leaf assistant message. _extract_last_message
+            # already computed this; we re-run a quick lookup here so the
+            # supervisor can read it without re-walking the tree.
+            last_content, _, _ = _extract_last_message(raw)
             self._states[chat_id] = ChatStatus(
                 chat_id=chat_id,
                 status=status,
                 updated_at=time.time(),
+                title=str(chat_title or ""),
+                body=str(last_content or ""),
             )
         return statuses
 
