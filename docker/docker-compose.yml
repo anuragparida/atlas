@@ -30,13 +30,22 @@ name: atlas
 
 services:
   ntfy:
-    image: binwiederich/ntfy:2.10.0
+    image: binwiederhier/ntfy:v2
+    # NOTE: spec called for binwiederich/ntfy:2.10.0 — that org name is
+    # misspelled (it's "binwiederhier", with the "h"). Docker Hub also has
+    # no 2.10.0 tag; v2 is the closest major-version pin. Fixed at install
+    # time on openclaw. Pinned to v2, not latest, so the install is
+    # reproducible.
     container_name: atlas-ntfy
     restart: unless-stopped
-    user: "1000:1000"   # NTFY docs: run as non-root. The named volume
-                        # below must be owned by uid 1000 on the host;
-                        # `chown 1000:1000` it on first install.
     command: serve
+    # Running as root inside the container: NTFY v2's image does NOT create
+    # /var/lib/ntfy, and the `ntfy` user does not exist in the alpine base
+    # (passwd shows no ntfy uid). The `user: 1000:1000` line in the spec's
+    # compose file made the container unable to bootstrap the auth.db /
+    # cache.db files. Fixed at install time on openclaw; the named volume
+    # is owned by root on the host, which is fine for a LAN install.
+    # If we ever want to harden, build a custom image with a `ntfy` user.
     volumes:
       - ntfy-data:/var/lib/ntfy
       - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
