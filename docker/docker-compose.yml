@@ -52,10 +52,12 @@ services:
       - atlas-net
 
   atlas-notifier:
-    # The image is built from ./notifier/Dockerfile in card 1 (per
-    # PHASE2-SPEC.md §3 — assume card 1 produces it). We do NOT build
-    # it here; the `image:` reference matches what card 1's Dockerfile
-    # tags the local build as (`atlas-notifier:dev`).
+    # The image is built locally from ./notifier/Dockerfile. We declare
+    # the build context here so `docker compose build atlas-notifier`
+    # works; the `image:` reference matches the local tag.
+    build:
+      context: ./notifier
+      dockerfile: Dockerfile
     image: atlas-notifier:dev
     container_name: atlas-notifier
     restart: unless-stopped
@@ -74,13 +76,10 @@ services:
           memory: 80M
         reservations:
           memory: 32M
-    # File-based liveness flag: the notifier's startup writes
-    # /var/lib/atlas-notifier/healthy on success, removes it on
-    # shutdown. Cheaper than a real HTTP probe (no server to maintain)
-    # and tells Docker the difference between "starting up" and
-    # "stuck".
+    # The notifier exposes /healthz on 127.0.0.1:18080 (in-container).
+    # The probe runs inside the container, so 127.0.0.1 works.
     healthcheck:
-      test: ["CMD", "python", "-c", "import os, sys; sys.exit(0 if os.path.exists('/var/lib/atlas-notifier/healthy') else 1)"]
+      test: ["CMD", "python", "-c", "import urllib.request, json, sys; r = urllib.request.urlopen('http://127.0.0.1:18080/healthz', timeout=3); d = json.loads(r.read()); sys.exit(0 if d.get('openwebui_reachable') and d.get('ntfy_reachable') else 1)"]
       interval: 30s
       timeout: 5s
       retries: 3
