@@ -67,14 +67,95 @@ def _parse_updated_at(value: Any) -> float:
     return 0.0
 
 
+def _leaf_message_from_tree(
+    messages: dict[str, dict[str, Any]], current_id: str | None
+) -> dict[str, Any] | None:
+    """Follow ``currentId`` -> childrenIds[0] -> ... until a leaf.
+
+    Modern Open WebUI stores messages as a dict keyed by id, with each
+    message pointing to its children via ``childrenIds``. ``currentId``
+    names the active branch; the leaf of that branch (the message with
+    no children) is the canonical "last message" for the chat.
+
+    Returns the leaf message dict, or None if the tree is empty or
+    ``currentId`` is missing. Defensive: an absent currentId falls back
+    to any message that has no children, so a partially-migrated chat
+    still produces a result.
+    """
+    if not messages:
+        return None
+    # Preferred path: follow currentId to the leaf.
+    if current_id and current_id in messages:
+        cur = current_id
+        seen: set[str] = set()
+        while cur in messages and cur not in seen:
+            seen.add(cur)
+            kids = messages[cur].get("childrenIds") or []
+            if not kids:
+                return messages[cur]
+            cur = kids[0]
+    # Fallback: any message with no children (a single-message chat, or
+    # a tree where currentId was lost). Pick the most recent by timestamp.
+    leaves = [m for m in messages.values() if not (m.get("childrenIds") or [])]
+    if not leaves:
+        return None
+    leaves.sort(key=lambda m: _parse_updated_at(m.get("timestamp")), reverse=True)
+    return leaves[0]
+
+
 def _extract_last_message(chat: dict[str, Any]) -> tuple[str | None, bool | None, float | None]:
     """Return (content, done, updated_at_epoch) of the last assistant message.
 
-    Open WebUI shape (per spec §1.2 / observed in production):
-      chat.chat_history = list of {role, content, done, updated_at}
+    Three shapes are supported (in priority order, first match wins):
+
+    1. **Hermes / Open WebUI 0.9.6+** (the one in production right now):
+       ``chat.history.messages`` is a ``dict[id, message]`` where each
+       message carries ``role``, ``content``, ``done`` and ``timestamp``.
+       The "last message" is the leaf of the active branch, found by
+       following ``chat.history.currentId`` -> ``childrenIds[0]`` -> ...
+       until a message with no children.
+
+    2. **Newer nested legacy** (also seen in the wild):
+       ``chat.chat_history.messages.History`` is a list of messages.
+
+    3. **Original legacy** (per spec §1.2):
+       ``chat.chat_history`` is a flat list of messages with
+       ``role``, ``content``, ``done``, ``updated_at``.
+
+    Always returns the same ``(content, done, last_updated)`` triple so
+    callers don't have to know which shape the chat came in.
     """
     chat_inner = chat.get("chat")
-    if isinstance(chat_inner, dict):
+    chat_inner_is_dict = isinstance(chat_inner, dict)
+
+    # Shape 1: Hermes / modern Open WebUI — dict-of-messages with a tree.
+    # Read from chat.history first; if chat_inner isn't a dict, fall
+    # back to top-level history.
+    if chat_inner_is_dict:
+        history = chat_inner.get("history")
+    else:
+        history = chat.get("history")
+    if isinstance(history, dict) and isinstance(history.get("messages"), dict):
+        messages = history["messages"]
+        current_id = history.get("currentId")
+        leaf = _leaf_message_from_tree(messages, current_id)
+        if leaf is not None:
+            role = (leaf.get("role") or "").lower()
+            if role in ("assistant", "model"):
+                return (
+                    leaf.get("content") or "",
+                    leaf.get("done"),
+                    _parse_updated_at(leaf.get("timestamp") or leaf.get("updated_at")),
+                )
+            # If the leaf is a user message (e.g. a chat with no reply yet),
+            # there is no assistant message to report.
+            return None, None, None
+
+    # Shape 2/3: legacy chat_history (list or dict-with-History).
+    # Only consult chat.chat_history when chat_inner is a dict; if chat
+    # isn't a dict at all, the legacy fixtures put chat_history at the
+    # top level.
+    if chat_inner_is_dict:
         history = chat_inner.get("chat_history")
     else:
         history = chat.get("chat_history")

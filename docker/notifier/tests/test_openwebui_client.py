@@ -1244,3 +1244,304 @@ async def test_poll_once_handles_non_list_chats():
         )
         result = await client.poll_once()
         assert result == {}
+
+
+# ---------------------------------------------------------------------------
+# Hermes WebUI 0.9.6 shape regression (t_ee0685d4)
+# ---------------------------------------------------------------------------
+#
+# The Hermes WebUI (Open WebUI 0.9.6) returns chat history under
+# chat.history.messages, keyed by message id. Each message carries
+# {id, parentId, childrenIds, role, content, timestamp, done}.
+# The previous implementation only looked for chat.chat_history and
+# chat.chat_history.messages.History, both of which are missing in
+# production. These tests lock down the correct Hermes shape so a
+# regression here would fail loudly.
+
+
+def test_extract_last_message_hermes_shape_basic():
+    """Real Hermes shape: chat.history.messages.<id>.<fields>, leaf via currentId.
+
+    The leaf is the assistant message with no children. Its content/done/
+    timestamp are returned in the same triple as the legacy shape so the
+    caller doesn't need to know which shape the chat came in.
+    """
+    chat = {
+        "id": "c1",
+        "title": "t",
+        "updated_at": 1_700_000_000,
+        "chat": {
+            "history": {
+                "currentId": "a1",
+                "messages": {
+                    "u1": {
+                        "id": "u1",
+                        "parentId": None,
+                        "childrenIds": ["a1"],
+                        "role": "user",
+                        "content": "What is 2+2?",
+                        "timestamp": 1_700_000_000,
+                    },
+                    "a1": {
+                        "id": "a1",
+                        "parentId": "u1",
+                        "childrenIds": [],
+                        "role": "assistant",
+                        "content": "4",
+                        "timestamp": 1_700_000_005,
+                        "done": True,
+                    },
+                },
+            }
+        },
+    }
+    content, done, ts = openwebui_client._extract_last_message(chat)
+    assert content == "4"
+    assert done is True
+    assert ts == 1_700_000_005
+
+
+def test_extract_last_message_hermes_shape_no_chat_inner():
+    """Some endpoints may not wrap under chat; currentId still drives the leaf.
+
+    If chat_inner is missing, fall back to top-level history/messages.
+    """
+    chat = {
+        "id": "c1",
+        "history": {
+            "currentId": "a1",
+            "messages": {
+                "a1": {
+                    "id": "a1",
+                    "parentId": None,
+                    "childrenIds": [],
+                    "role": "assistant",
+                    "content": "hello",
+                    "timestamp": 1_700_000_000,
+                    "done": True,
+                },
+            },
+        },
+    }
+    content, done, ts = openwebui_client._extract_last_message(chat)
+    assert content == "hello"
+    assert done is True
+    assert ts == 1_700_000_000
+
+
+def test_extract_last_message_hermes_shape_follows_currentid_to_leaf():
+    """When messages are a tree, currentId points at the active branch; the
+    'last message' is the leaf of that branch, not the dict insertion order.
+
+    Even if a sibling tree contains a 'newer' message, we trust currentId ->
+    childrenIds[0] -> ... -> no children as the canonical leaf.
+    """
+    chat = {
+        "id": "c1",
+        "chat": {
+            "history": {
+                "currentId": "b2",  # active branch
+                "messages": {
+                    "a1": {  # older, abandoned branch
+                        "id": "a1",
+                        "parentId": None,
+                        "childrenIds": ["a2"],
+                        "role": "user",
+                        "content": "old question",
+                        "timestamp": 1_700_000_000,
+                    },
+                    "a2": {  # abandoned
+                        "id": "a2",
+                        "parentId": "a1",
+                        "childrenIds": [],
+                        "role": "assistant",
+                        "content": "old answer",
+                        "timestamp": 1_700_000_005,
+                        "done": True,
+                    },
+                    "u1": {  # active branch root
+                        "id": "u1",
+                        "parentId": None,
+                        "childrenIds": ["b1", "b3"],
+                        "role": "user",
+                        "content": "new question",
+                        "timestamp": 1_700_000_010,
+                    },
+                    "b1": {  # active but not the current branch
+                        "id": "b1",
+                        "parentId": "u1",
+                        "childrenIds": ["b2"],
+                        "role": "assistant",
+                        "content": "first attempt",
+                        "timestamp": 1_700_000_015,
+                        "done": True,
+                    },
+                    "b2": {  # current leaf — the one we want
+                        "id": "b2",
+                        "parentId": "b1",
+                        "childrenIds": [],
+                        "role": "assistant",
+                        "content": "final answer",
+                        "timestamp": 1_700_000_020,
+                        "done": True,
+                    },
+                    "b3": {  # a different branch
+                        "id": "b3",
+                        "parentId": "u1",
+                        "childrenIds": [],
+                        "role": "assistant",
+                        "content": "alternative answer",
+                        "timestamp": 1_700_000_025,
+                        "done": True,
+                    },
+                },
+            }
+        },
+    }
+    content, done, ts = openwebui_client._extract_last_message(chat)
+    assert content == "final answer"
+    assert done is True
+    assert ts == 1_700_000_020
+
+
+def test_extract_last_message_hermes_shape_streaming_not_done():
+    """An assistant message with done=False and a recent timestamp is 'generating'."""
+    now = 1_700_000_100.0
+    chat = {
+        "id": "c1",
+        "chat": {
+            "history": {
+                "currentId": "a1",
+                "messages": {
+                    "a1": {
+                        "id": "a1",
+                        "parentId": "u1",
+                        "childrenIds": [],
+                        "role": "assistant",
+                        "content": "partial...",
+                        "timestamp": now - 5,
+                        "done": False,
+                    },
+                },
+            }
+        },
+    }
+    content, done, ts = openwebui_client._extract_last_message(chat)
+    assert content == "partial..."
+    assert done is False
+    assert ts == now - 5
+
+
+def test_extract_last_message_real_hermes_webui_shape(tmp_path):
+    """Regression: a real chat fetched from the Hermes WebUI 0.9.6 must
+    yield a non-None triple. This is the captured shape from
+    /api/v1/chats/a35f3f25-1613-4a90-99b1-3d89dddd1e86 on openclaw.
+    """
+    import json as _json
+
+    fixture = tmp_path / "real_chat.json"
+    fixture.write_text(
+        _json.dumps(
+            {
+                "id": "a35f3f25-1613-4a90-99b1-3d89dddd1e86",
+                "user_id": "0d34215f-f709-4c83-8ae1-aa09cd6b196d",
+                "title": "atlas-test-1780898938",
+                "chat": {
+                    "title": "atlas-test-1780898938",
+                    "models": ["Hermes Agent"],
+                    "history": {
+                        "currentId": "a1",
+                        "messages": {
+                            "u1": {
+                                "id": "u1",
+                                "parentId": None,
+                                "childrenIds": ["a1"],
+                                "role": "user",
+                                "content": "What is 2+2?",
+                                "timestamp": 1780898938,
+                                "models": ["Hermes Agent"],
+                            },
+                            "a1": {
+                                "id": "a1",
+                                "parentId": "u1",
+                                "childrenIds": [],
+                                "role": "assistant",
+                                "content": "4",
+                                "timestamp": 1780898944,
+                                "model": "Hermes Agent",
+                                "done": True,
+                            },
+                        },
+                    },
+                },
+                "updated_at": 1780898943,
+                "created_at": 1780898938,
+                "share_id": None,
+                "archived": False,
+                "pinned": False,
+                "meta": {},
+                "folder_id": None,
+                "tasks": None,
+                "summary": None,
+            }
+        )
+    )
+    chat = _json.loads(fixture.read_text())
+    content, done, ts = openwebui_client._extract_last_message(chat)
+    assert content is not None, "real Hermes shape must yield non-None content"
+    assert content == "4"
+    assert done is True
+    assert ts == 1780898944
+
+
+def test_infer_status_real_hermes_shape_completed():
+    """End-to-end status inference on the real Hermes shape: completed -> idle."""
+    chat = {
+        "id": "c1",
+        "title": "t",
+        "updated_at": 1_700_000_000,
+        "chat": {
+            "history": {
+                "currentId": "a1",
+                "messages": {
+                    "a1": {
+                        "id": "a1",
+                        "parentId": "u1",
+                        "childrenIds": [],
+                        "role": "assistant",
+                        "content": "4",
+                        "timestamp": 1_700_000_000,
+                        "done": True,
+                    }
+                },
+            }
+        },
+    }
+    # A few seconds after the leaf timestamp; done=True -> idle regardless of age.
+    state = openwebui_client.infer_status(chat, now=1_700_000_005)
+    assert state == "idle"
+
+
+def test_extract_last_message_hermes_user_only_returns_none():
+    """A history with only a user message (no assistant reply yet) returns
+    (None, None, None) so infer_status can return 'unknown' rather than
+    classifying a user prompt as a generation event."""
+    chat = {
+        "id": "c1",
+        "chat": {
+            "history": {
+                "currentId": "u1",
+                "messages": {
+                    "u1": {
+                        "id": "u1",
+                        "parentId": None,
+                        "childrenIds": [],
+                        "role": "user",
+                        "content": "Reply with the single word DONE.",
+                        "timestamp": 1_700_000_000,
+                    },
+                },
+            }
+        },
+    }
+    assert openwebui_client._extract_last_message(chat) == (None, None, None)
