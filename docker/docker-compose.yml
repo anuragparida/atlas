@@ -1,0 +1,110 @@
+name: atlas
+
+# Atlas Phase 2 — NTFY self-host + atlas-notifier listener stack.
+#
+# Per PHASE2-SPEC.md §3, this is the fragment that lives in
+# /home/ody/workspace/atlas/docker/docker-compose.yml on openclaw. Two
+# services: the NTFY self-host (port 8090) and the atlas-notifier
+# Python service (no published port — it speaks outbound only).
+#
+# Network: `atlas-net` is a named bridge shared with the existing Open
+# WebUI compose file. If that file already defines a network, name it
+# `atlas-net` (or add `external: true` and an `atlas-net` bridge created
+# with `docker network create atlas-net`).
+#
+# Volume: `ntfy-data` is the named volume that holds NTFY's auth.db,
+# cache.db, and any attachments. It survives `docker compose restart`
+# but is wiped by `docker compose down -v` — that is treated as
+# catastrophic for the install (re-bootstrap is required; see
+# docker/ntfy/README.md).
+#
+# Port choice: 8090 is the spec's value. The high-port convention
+# starts at 12000, so 8090 is an explicit exception. Do not silently
+# pick a different port — if 8090 is bound on openclaw already, surface
+# the conflict in the build card body before changing it.
+#
+# Constraints (HARD):
+# - No real tokens are committed to this file. The publish token is
+#   produced by `issue_token.py` and pasted into docker/notifier/.env
+#   (which is .gitignored).
+
+services:
+  ntfy:
+    image: binwiederhier/ntfy:v2
+    # NOTE: spec called for binwiederich/ntfy:2.10.0 — that org name is
+    # misspelled (it's "binwiederhier", with the "h"). Docker Hub also has
+    # no 2.10.0 tag; v2 is the closest major-version pin. Fixed at install
+    # time on openclaw. Pinned to v2, not latest, so the install is
+    # reproducible.
+    container_name: atlas-ntfy
+    restart: unless-stopped
+    command: serve
+    # Running as root inside the container: NTFY v2's image does NOT create
+    # /var/lib/ntfy, and the `ntfy` user does not exist in the alpine base
+    # (passwd shows no ntfy uid). The `user: 1000:1000` line in the spec's
+    # compose file made the container unable to bootstrap the auth.db /
+    # cache.db files. Fixed at install time on openclaw; the named volume
+    # is owned by root on the host, which is fine for a LAN install.
+    # If we ever want to harden, build a custom image with a `ntfy` user.
+    volumes:
+      - ntfy-data:/var/lib/ntfy
+      - ./ntfy/server.yml:/etc/ntfy/server.yml:ro
+    ports:
+      - "8090:8090"     # LAN + Tailscale; see header comment.
+    healthcheck:
+      test: ["CMD", "wget", "-q", "--spider", "http://localhost:8090/v1/health"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 10s
+    networks:
+      - atlas-net
+
+  atlas-notifier:
+    # The image is built locally from ./notifier/Dockerfile. We declare
+    # the build context here so `docker compose build atlas-notifier`
+    # works; the `image:` reference matches the local tag.
+    build:
+      context: ./notifier
+      dockerfile: Dockerfile
+    image: atlas-notifier:dev
+    container_name: atlas-notifier
+    restart: unless-stopped
+    env_file: ./notifier/.env
+    volumes:
+      - notifier-state:/var/lib/atlas-notifier
+    depends_on:
+      ntfy:
+        condition: service_healthy
+    # Resource limits per PHASE2-SPEC.md §4. Hard cap 80M gives headroom
+    # for transient RSS spikes during WS reconnect storms; the target
+    # is 30-50M, verified by `docker stats --no-stream` after 5 min idle.
+    deploy:
+      resources:
+        limits:
+          memory: 80M
+        reservations:
+          memory: 32M
+    # The notifier exposes /healthz on 127.0.0.1:18080 (in-container).
+    # The probe runs inside the container, so 127.0.0.1 works.
+    healthcheck:
+      test: ["CMD", "python", "-c", "import urllib.request, json, sys; r = urllib.request.urlopen('http://127.0.0.1:18080/healthz', timeout=3); d = json.loads(r.read()); sys.exit(0 if d.get('openwebui_reachable') and d.get('ntfy_reachable') else 1)"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 20s
+    networks:
+      - atlas-net
+
+networks:
+  atlas-net:
+    # External bridge shared with the Open WebUI stack. Create it on
+    # openclaw with:
+    #     docker network create atlas-net
+    # and reference it from the Open WebUI compose file as well, so
+    # both stacks can resolve each other by service name.
+    external: true
+
+volumes:
+  ntfy-data:
+  notifier-state:

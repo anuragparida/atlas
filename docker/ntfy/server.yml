@@ -1,0 +1,70 @@
+# Atlas NTFY — single-user, single-purpose.
+#
+# Per atlas/SPEC.md §7: only the atlas-notifier publishes, only Atlas Chat's
+# iOS client subscribes, only the atlas-<userid> topic family exists.
+#
+# This file is bind-mounted read-only into the atlas-ntfy container at
+# /etc/ntfy/server.yml. Edit it on the host; restart atlas-ntfy to apply.
+#
+# Bootstrapping tokens and ACLs is done by hand on first install, via
+# `docker exec atlas-ntfy ntfy user add …` and `… ntfy token add …`. See
+# docker/ntfy/README.md for the full procedure and docker/ntfy/issue_token.py
+# for an idempotent wrapper around it.
+
+base-url: "http://0.0.0.0:8090"
+listen-http: ":8090"
+
+# ---------------------------------------------------------------------------
+# Auth: per-user access control. The headline is `deny-all`: with no further
+# config, NOBODY can read or write anything. We open up specific topics via
+# per-topic tokens (see README §"Bootstrap").
+#
+# We deliberately reject the open-by-default policy because it would let
+# anyone on the LAN read the notifier's chat-completion messages. The per-
+# topic token model is "publish token has write-only on a single topic,
+# subscribe token has read-only on the same topic". See docker/ntfy/README.md
+# for the auth model rationale.
+# ---------------------------------------------------------------------------
+#
+# Setting auth-file implicitly enables authentication. Path is inside the
+# container; the volume mount in docker-compose.yml makes /var/lib/ntfy
+# persistent across container restarts.
+auth-file: "/var/lib/ntfy/auth.db"
+auth-default-access: "deny-all"
+
+# Cache: SQLite, persisted via the same /var/lib/ntfy named volume that
+# holds the auth DB. Survives `docker compose restart`; only `docker
+# compose down -v` wipes it, which is treated as catastrophic for the
+# install.
+cache-file: "/var/lib/ntfy/cache.db"
+cache-duration: "12h"     # hold undelivered messages 12h in case iOS is offline
+
+# ---------------------------------------------------------------------------
+# Rate limits. NTFY's defaults are tight (visitor-message-daily-limit is
+# unset / 0 by default and visitor-request-limit-burst is 60). The notifier
+# can fire many completions in a burst when several Open WebUI chats finish
+# at once, so we raise the visitor limits modestly. The notifier
+# authenticates with a token, so it is not a "visitor" — these limits
+# apply only to anonymous traffic, which is denied by
+# auth-default-access: deny-all above. They are kept anyway as a safety
+# net if auth is ever misconfigured.
+#
+# Note: PHASE2-SPEC.md §2.3 asked for `visitor-message-daily-burst-limit:
+# 100`. The upstream NTFY server config schema does not have that key
+# (only `visitor-message-daily-limit` and `visitor-request-limit-burst`),
+# so we raise the existing two instead.
+# ---------------------------------------------------------------------------
+visitor-message-daily-limit: 1000
+visitor-request-limit-burst: 30
+visitor-request-limit-replenish: "10s"
+
+# Logging: stderr, JSON. One line per request. Goes to `docker logs`.
+# JSON is chosen so the systemd journal or a log shipper can parse it
+# without regex. Hot-reloadable via SIGHUP.
+log-level: "info"
+log-format: "json"
+
+# No federation. We are not part of the global NTFY network. The iOS app
+# reaches this server directly over LAN/Tailscale; there is no fallback
+# through ntfy.sh.
+upstream-base-url: ""
