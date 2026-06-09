@@ -147,7 +147,7 @@ Wire the publish token into the notifier's env, then restart the notifier so it 
 
 ```bash
 # Edit docker/notifier/.env and set:
-#   NTFY_PUBLISH_TOKEN=*** token you just got'
+#   NTFY_PUBLISH_TOKEN=*** token you just got
 docker compose -f docker/docker-compose.yml restart atlas-notifier
 docker compose -f docker/docker-compose.yml ps atlas-notifier   # healthy
 ```

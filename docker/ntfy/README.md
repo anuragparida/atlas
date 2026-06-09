@@ -23,7 +23,7 @@ docker compose ps ntfy   # wait for "healthy"
 # 2. Run the bootstrap script. It will prompt for the iOS subscriber's
 #    password (the password the iOS NTFY app will use to authenticate
 #    when subscribing to atlas-<userid>).
-uv run --with ./pyproject.toml docker/ntfy/issue_token.py --user-id anurag
+uv run --project docker/ntfy docker/ntfy/issue_token.py --user-id anurag
 
 # 3. Copy the printed tokens:
 #    - Subscribe token  → paste into the iOS NTFY app subscription
