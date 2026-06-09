@@ -94,8 +94,21 @@ true;
 `;
 };
 
+// Re-export the completion detector so the WebView component can
+// inject it through the same `injectedJavaScript` channel as the
+// unsent-draft hook. The detector lives in `src/notifications/`
+// alongside `bannerController.ts`; we re-export it here to keep
+// the WebView's bridge surface in one file.
+export { OPEN_WEBUI_COMPLETION_HOOK } from "@/notifications/openWebUiCompletion";
+
 export type BridgeMessage =
   | { type: "unsentDraft"; value: string }
+  | {
+      type: "completion";
+      chatId: string;
+      title: string;
+      clickUrl: string;
+    }
   | { type: string; value?: unknown };
 
 export const parseBridgeMessage = (raw: string): BridgeMessage | null => {
