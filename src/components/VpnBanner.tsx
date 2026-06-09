@@ -15,6 +15,11 @@ import {
 } from "react-native";
 import { TAILSCALE_URL } from "@/reachability/probe";
 import { useReachabilityStore } from "@/reachability/store";
+import {
+  VPN_BANNER_A11Y,
+  VPN_BANNER_TEXT,
+  VPN_SHEET_TITLE,
+} from "@/copy/strings";
 
 const BANNER_HEIGHT = 24;
 
@@ -32,10 +37,10 @@ export default function VpnBanner() {
         style={({ pressed }) => [styles.banner, pressed && styles.pressed]}
         hitSlop={8}
         accessibilityRole="button"
-        accessibilityLabel="via VPN, tap for details"
+        accessibilityLabel={VPN_BANNER_A11Y}
       >
         <Text style={styles.icon}>🛡</Text>
-        <Text style={styles.text}>via VPN · tap for details</Text>
+        <Text style={styles.text}>{VPN_BANNER_TEXT}</Text>
       </Pressable>
 
       <Modal
@@ -51,7 +56,7 @@ export default function VpnBanner() {
         />
         <View style={styles.sheet}>
           <View style={styles.handle} />
-          <Text style={styles.sheetTitle}>Routing via Tailscale</Text>
+          <Text style={styles.sheetTitle}>{VPN_SHEET_TITLE}</Text>
           <Text style={styles.endpoint}>{TAILSCALE_URL}</Text>
 
           <View style={styles.row}>

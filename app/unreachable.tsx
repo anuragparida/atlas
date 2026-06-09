@@ -9,6 +9,12 @@ import { SafeAreaView } from "react-native-safe-area-context";
 import { router } from "expo-router";
 import { useReachabilityStore } from "@/reachability/store";
 import { useReachability } from "@/reachability/useReachability";
+import {
+  UNREACHABLE_HEADLINE,
+  UNREACHABLE_PRIMARY_BUTTON,
+  UNREACHABLE_SECONDARY_BUTTON,
+  UNREACHABLE_SUB,
+} from "@/copy/strings";
 
 export default function Unreachable() {
   // Mount the hook here too so the probe loop keeps running while
@@ -26,24 +32,22 @@ export default function Unreachable() {
     <SafeAreaView style={styles.container} edges={["top", "left", "right", "bottom"]}>
       <View style={styles.center}>
         <Text style={styles.icon}>⚠️🌥️</Text>
-        <Text style={styles.headline}>Can't reach openclaw</Text>
-        <Text style={styles.sub}>
-          If you're away from home, turn on Tailscale VPN.
-        </Text>
+        <Text style={styles.headline}>{UNREACHABLE_HEADLINE}</Text>
+        <Text style={styles.sub}>{UNREACHABLE_SUB}</Text>
         <View style={styles.buttons}>
           <Pressable
             onPress={() => Linking.openURL("tailscale://").catch(() => {})}
             style={({ pressed }) => [styles.primary, pressed && styles.pressed]}
             accessibilityRole="button"
           >
-            <Text style={styles.primaryText}>Open Tailscale</Text>
+            <Text style={styles.primaryText}>{UNREACHABLE_PRIMARY_BUTTON}</Text>
           </Pressable>
           <Pressable
             onPress={onRetry}
             style={({ pressed }) => [styles.secondary, pressed && styles.pressed]}
             accessibilityRole="button"
           >
-            <Text style={styles.secondaryText}>Retry</Text>
+            <Text style={styles.secondaryText}>{UNREACHABLE_SECONDARY_BUTTON}</Text>
           </Pressable>
         </View>
       </View>
