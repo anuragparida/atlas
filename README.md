@@ -209,13 +209,15 @@ When in doubt, the entry point is `app/index.tsx` — it owns the reachability h
 
 ## 10. What's not in v1 (yet)
 
-- **Atlas Hermes app** (Phase 4). Same scaffold, different bundle id (`com.anuragparida.atlas.hermes`), different URL, different name.
-- **Phase 2 notifier + NTFY Docker stack.** Spec is in `PHASE2-SPEC.md`; code is empty placeholder `src/notifications/.gitkeep`. Until this ships, Atlas has no backgrounded-completion notifications — the `§5 step 4-5` checks above only test that the plumbing is in place, not that the end-to-end notification fires.
-- **EAS Update (OTA).** The scaffold is set up for it (`cli.appVersionSource: "remote"`, OTA-updateable JS), but no update channel is configured. Add an `update` block to `eas.json` and run `eas update:configure` when you're ready to ship JS-only fixes without a build round trip.
-- **Android.** The scaffold has the Android config block (`package: com.anuragparida.atlas.chat`) but no iOS-spec-required Android-specific testing. Deferred — see `SPEC.md` §4.
+- **Atlas Hermes app.** Same scaffold, different bundle id (`com.anuragparida.atlas.hermes`), different URL, different name. See `ROADMAP.md` §1.
+- **atlas-notifier service + NTFY Docker stack.** **Shipped (Phase 2, 2026-06-08).** Spec is in `PHASE2-SPEC.md`; the `docker/` subtree holds the live code. End-to-end notification delivery now works; the `§5` checks above are the as-shipped verification.
+- **EAS Update (OTA).** The scaffold is set up for it (`cli.appVersionSource: "remote"`, OTA-updateable JS), but no update channel is configured. Add an `update` block to `eas.json` and run `eas update:configure` when you're ready to ship JS-only fixes without a build round trip. See `ROADMAP.md` §9.
+- **Android.** The scaffold has the Android config block (`package: com.anuragparida.atlas.chat`) but no iOS-spec-required Android-specific testing. Deferred — see `SPEC.md` §4 and `ROADMAP.md` §2.
+
+For the full deferred-items list (Atlas Hermes, multi-user NTFY, custom themes, tablet layout, offline mode, Tailscale HTTPS, EAS production/TestFlight, EAS Update, in-app memory tooling), see **`ROADMAP.md`**. Each item has a one-line description, an estimated scope (weekend / phase / full-project), and the open decision points.
 
 ---
 
 ## One-line summary
 
-MacBook + iPhone + free Apple ID + AltStore + Tailscale + openclaw on 9875 + NTFY on 8090 (when Phase 2 ships) → `pnpm install && eas build --platform ios --profile development` → drag `.ipa` into AltStore → ship.
+MacBook + iPhone + free Apple ID + AltStore + Tailscale + openclaw on 9875 + NTFY on 8090 → `pnpm install && eas build --platform ios --profile development` → drag `.ipa` into AltStore → ship.
