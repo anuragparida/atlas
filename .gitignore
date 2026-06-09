@@ -28,3 +28,6 @@ __pycache__/
 .pytest_cache/
 .coverage
 htmlcov/
+
+# Open WebUI session secret (generated on first local run, never commit)
+.webui_secret_key
